@@ -101,6 +101,8 @@ static int btsco_samplerate = 8000;
 static ALSAUseCaseList mUseCaseList;
 static void *csd_handle;
 
+static char voiceTXDeviceOnHeadphones[128];
+
 static hw_module_methods_t s_module_methods = {
     open            : s_device_open
 };
@@ -209,6 +211,11 @@ bool platform_is_Fusion3()
         return true;
     else
         return false;
+}
+
+char* getVoiceTXDeviceForHeadphones() {
+    property_get("ro.ril.tx_headphone_override", voiceTXDeviceOnHeadphones, "");
+    return voiceTXDeviceOnHeadphones;
 }
 
 int deviceName(alsa_handle_t *handle, unsigned flags, char **value)
@@ -573,7 +580,7 @@ void switchDevice(alsa_handle_t *handle, uint32_t devices, uint32_t mode)
         free(use_case);
         use_case = NULL;
     }
-    ALOGD("switchDevice: curTxUCMDevivce %s curRxDevDevice %s", curTxUCMDevice, curRxUCMDevice);
+    ALOGD("switchDevice: curTxUCMDevivce %s curRxDevDevice %s isFusion3: %i inCallDevSwitch: %i", curTxUCMDevice, curRxUCMDevice, platform_is_Fusion3(), inCallDevSwitch);
 
     if (platform_is_Fusion3() && (inCallDevSwitch == true)) {
         /* get tx acdb id */
@@ -594,14 +601,14 @@ void switchDevice(alsa_handle_t *handle, uint32_t devices, uint32_t mode)
         }
 
 #ifdef QCOM_CSDCLIENT_ENABLED
-        ALOGV("rx_dev_id=%d, tx_dev_id=%d\n", rx_dev_id, tx_dev_id);
+        ALOGD("Enabling devices rx_dev_id=%d, tx_dev_id=%d, mDevSettingsFlag=%d\n", rx_dev_id, tx_dev_id, mDevSettingsFlag);
         if (csd_enable_device == NULL) {
             ALOGE("dlsym:Error:%s Loading csd_client_enable_device", dlerror());
         } else {
             err = csd_enable_device(rx_dev_id, tx_dev_id, mDevSettingsFlag);
             if (err < 0)
             {
-                ALOGE("csd_client_disable_device failed, error %d", err);
+                ALOGE("csd_client_enable_device failed, error %d", err);
             }
         }
 #endif
@@ -1440,10 +1447,18 @@ char *getUCMDevice(uint32_t devices, int input, char *rxDevice)
                 return strdup(SND_USE_CASE_DEV_HANDSET); /* HANDSET TX */
             } else {
                 if (mDevSettingsFlag & DMIC_FLAG) {
+                    char* voiceTXHeadphoneOverride = getVoiceTXDeviceForHeadphones();
+                    bool overrideVoiceTXHeadphone = (strlen(voiceTXHeadphoneOverride) > 0);
 #ifdef USES_FLUENCE_INCALL
                     if(callMode == AudioSystem::MODE_IN_CALL) {
                         if (fluence_mode == FLUENCE_MODE_ENDFIRE) {
-                            return strdup(SND_USE_CASE_DEV_DUAL_MIC_ENDFIRE); /* DUALMIC EF TX */
+                            if(!strcmp(rxDevice, SND_USE_CASE_DEV_VOC_HEADPHONE) && overrideVoiceTXHeadphone) {
+                                ALOGD("rx device is %s with no mic. Using %s override as tx device",
+                                      SND_USE_CASE_DEV_VOC_HEADPHONE, voiceTXHeadphoneOverride);
+                                return strdup(voiceTXHeadphoneOverride);
+                            } else {
+                                return strdup(SND_USE_CASE_DEV_DUAL_MIC_ENDFIRE); /* DUALMIC EF TX */
+                            }
                         } else if (fluence_mode == FLUENCE_MODE_BROADSIDE) {
                             return strdup(SND_USE_CASE_DEV_DUAL_MIC_BROADSIDE); /* DUALMIC BS TX */
                         } else {
@@ -1463,7 +1478,14 @@ char *getUCMDevice(uint32_t devices, int input, char *rxDevice)
                         }
                     } else {
                         if (fluence_mode == FLUENCE_MODE_ENDFIRE) {
-                            return strdup(SND_USE_CASE_DEV_DUAL_MIC_ENDFIRE); /* DUALMIC EF TX */
+                            if(callMode == AudioSystem::MODE_IN_CALL && !strcmp(rxDevice, SND_USE_CASE_DEV_VOC_HEADPHONE) &&
+                               voiceTXHeadphoneOverride) {
+                                ALOGD("rx device is %s with no mic. Using %s override as tx device",
+                                      SND_USE_CASE_DEV_VOC_HEADPHONE, voiceTXHeadphoneOverride);
+                                return strdup(voiceTXHeadphoneOverride);
+                            } else {
+                                return strdup(SND_USE_CASE_DEV_DUAL_MIC_ENDFIRE); /* DUALMIC EF TX */
+                            }
                         } else if (fluence_mode == FLUENCE_MODE_BROADSIDE) {
                             return strdup(SND_USE_CASE_DEV_DUAL_MIC_BROADSIDE); /* DUALMIC BS TX */
                         }
